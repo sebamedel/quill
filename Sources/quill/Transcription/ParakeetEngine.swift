@@ -22,13 +22,13 @@ actor ParakeetEngine: TranscriptionEngine {
     }
 
     nonisolated let name = "parakeet"
-    nonisolated let model = "parakeet-tdt-0.6b-v2-coreml"
+    nonisolated let model = "parakeet-tdt-0.6b-v3-coreml"
 
     private var manager: AsrManager?
 
     func prepare() async throws {
         guard manager == nil else { return }
-        let models = try await AsrModels.downloadAndLoad(version: .v2)
+        let models = try await AsrModels.downloadAndLoad(version: .v3)
         let manager = AsrManager()
         try await manager.loadModels(models)
         self.manager = manager

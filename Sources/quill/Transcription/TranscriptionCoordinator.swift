@@ -72,13 +72,15 @@ actor TranscriptionCoordinator {
     }
 
     private func drain() async {
+        var refinables: [URL] = []
         while !queue.isEmpty {
             let dir = queue.removeFirst()
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
             do {
-                try await transcribe(dir)
+                try await transcribe(dir, using: preparedEngine())
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
                 runHook(for: dir)
+                refinables.append(dir)
             } catch {
                 log(dir, "transcription failed: \(error)")
                 lastFailure = dir.lastPathComponent
@@ -90,6 +92,12 @@ actor TranscriptionCoordinator {
         }
         await engine?.release()
         engine = nil
+
+        // Second pass, once the fast transcripts and their minutas are already
+        // out: the slow engine reruns the same audio and replaces the
+        // transcript. It runs after the queue drains so a refinement never
+        // delays the next meeting's first pass.
+        await refine(refinables)
         publish(lastFailure.map { .failed(session: $0) } ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release
@@ -97,9 +105,58 @@ actor TranscriptionCoordinator {
         drainIfIdle()
     }
 
-    private func transcribe(_ dir: URL) async throws {
+    /// Re-transcribe finished sessions with the configured `refine_with`
+    /// engine and replace their transcripts. The first pass is kept alongside
+    /// as transcript-<engine>.md: it has finer timestamps than an
+    /// encoder-decoder model can produce, so it stays useful for navigating.
+    private func refine(_ dirs: [URL]) async {
+        guard let nombre = Config.refineWith(), !dirs.isEmpty else { return }
+        guard let refinador = makeEngine(named: nombre) else {
+            FileHandle.standardError.write(Data(
+                "warning: unknown refine_with engine \"\(nombre)\" — skipping\n".utf8
+            ))
+            return
+        }
+        do {
+            try await refinador.prepare()
+        } catch {
+            for dir in dirs { log(dir, "refine with \(nombre) unavailable: \(error)") }
+            return
+        }
+
+        for dir in dirs {
+            publish(.transcribing(session: dir.lastPathComponent, queued: 0))
+            do {
+                try preservePreviousTranscript(in: dir, from: Config.transcriptionEngine())
+                log(dir, "refining transcript with \(nombre)")
+                try await transcribe(dir, using: refinador)
+                runHook(for: dir)
+                notifyUser(
+                    title: "quill — transcript refined",
+                    body: "\(dir.lastPathComponent) · \(nombre)"
+                )
+            } catch {
+                // The first transcript is already on disk and the minuta was
+                // written from it, so a failed refinement costs nothing.
+                log(dir, "refinement failed, keeping first transcript: \(error)")
+            }
+        }
+        await refinador.release()
+    }
+
+    /// Copy transcript.md aside under the engine that produced it, so the
+    /// refinement doesn't destroy the finer-grained timings of the first pass.
+    private func preservePreviousTranscript(in dir: URL, from previo: String) throws {
+        let fm = FileManager.default
+        let actual = dir.appendingPathComponent("transcript.md")
+        guard fm.fileExists(atPath: actual.path) else { return }
+        let destino = dir.appendingPathComponent("transcript-\(previo).md")
+        if fm.fileExists(atPath: destino.path) { try fm.removeItem(at: destino) }
+        try fm.copyItem(at: actual, to: destino)
+    }
+
+    private func transcribe(_ dir: URL, using engine: TranscriptionEngine) async throws {
         let meta = try SessionMeta.read(from: dir)
-        let engine = try await preparedEngine()
 
         var merged: [Transcript.Segment] = []
         for track in meta.tracks {
@@ -143,12 +200,40 @@ actor TranscriptionCoordinator {
     private func preparedEngine() async throws -> TranscriptionEngine {
         if let engine { return engine }
         let configured = Config.transcriptionEngine()
-        if configured != "parakeet" {
+
+        guard let engine = makeEngine(named: configured) else {
             FileHandle.standardError.write(Data(
                 "warning: unknown transcription engine \"\(configured)\" — using parakeet\n".utf8
             ))
+            return try await prepared(ParakeetEngine())
         }
-        let engine = ParakeetEngine()
+
+        // Missing cohere weights shouldn't cost the recording its transcript:
+        // fall back to parakeet, which downloads its own models.
+        do {
+            return try await prepared(engine)
+        } catch {
+            guard configured == "cohere" else { throw error }
+            FileHandle.standardError.write(Data(
+                "warning: cohere unavailable (\(error)) — falling back to parakeet\n".utf8
+            ))
+            return try await prepared(ParakeetEngine())
+        }
+    }
+
+    private func makeEngine(named name: String) -> TranscriptionEngine? {
+        switch name {
+        case "parakeet": return ParakeetEngine()
+        case "cohere":
+            return CohereEngine(
+                modelDir: Config.cohereModelDir(),
+                languageCode: Config.transcriptionLanguage()
+            )
+        default: return nil
+        }
+    }
+
+    private func prepared(_ engine: TranscriptionEngine) async throws -> TranscriptionEngine {
         try await engine.prepare()
         self.engine = engine
         return engine

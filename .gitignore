@@ -1,2 +1,9 @@
 .build/
 .DS_Store
+
+# Notas de trabajo propias: contienen nombres de clientes y datos de reuniones
+# reales. Se quedan en el disco, no viajan al repositorio.
+HANDOFF.md
+BITACORA.md
+CLAUDE.md
+.issues/

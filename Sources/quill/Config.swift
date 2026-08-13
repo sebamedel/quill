@@ -38,10 +38,39 @@ enum Config {
         transcription()?["enabled"] as? Bool ?? true
     }
 
-    /// Configured engine name. Only "parakeet" ships today; the coordinator
-    /// warns and falls back for anything else.
+    /// Configured engine name: "parakeet" (default, fast) or "cohere" (slower
+    /// but conditioned on an explicit language). The coordinator warns and
+    /// falls back to parakeet for anything else.
     static func transcriptionEngine() -> String {
         transcription()?["engine"] as? String ?? "parakeet"
+    }
+
+    /// Optional second engine that re-transcribes each session after the first
+    /// one finishes. The point is to get both: parakeet returns in seconds so
+    /// the minuta lands right after the meeting, then the slower engine
+    /// replaces the transcript with a faithful one. Nil disables the pass.
+    static func refineWith() -> String? {
+        guard let name = transcription()?["refine_with"] as? String,
+              !name.isEmpty, name != transcriptionEngine()
+        else { return nil }
+        return name
+    }
+
+    /// Language code fed to engines that condition on one ("es", "en", …).
+    /// Ignored by parakeet, which detects the language on its own.
+    static func transcriptionLanguage() -> String {
+        transcription()?["language"] as? String ?? "es"
+    }
+
+    /// Directory holding the cohere Core ML weights. Unlike parakeet, these
+    /// are not downloaded automatically — they are ~2.2 GB fetched once by
+    /// hand, so their location is configurable.
+    static func cohereModelDir() -> URL {
+        if let dir = transcription()?["cohere_model_dir"] as? String, !dir.isEmpty {
+            return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/quill/models/cohere", isDirectory: true)
     }
 
     private static func transcription() -> [String: Any]? {

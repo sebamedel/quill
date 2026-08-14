@@ -183,9 +183,13 @@ actor TranscriptionCoordinator {
         for dir in dirs {
             publish(.transcribing(session: dir.lastPathComponent, queued: 0))
             do {
+                // La primera pasada no inventa sobre silencio: donde ella no oyo
+                // nada, no hay nada. Se le pasa esa lectura al refinador para
+                // que no le entregue silencio a un modelo que lo rellena.
+                let pistas = PistasDeVoz.leer(de: dir)
                 try preservePreviousTranscript(in: dir, from: Config.transcriptionEngine())
                 log(dir, "refining transcript with \(nombre)")
-                try await transcribe(dir, using: refinador)
+                try await transcribe(dir, using: refinador, pistas: pistas)
                 runHook(for: dir)
                 notifyUser(
                     title: "quill — transcript refined",
@@ -211,7 +215,9 @@ actor TranscriptionCoordinator {
         try fm.copyItem(at: actual, to: destino)
     }
 
-    private func transcribe(_ dir: URL, using engine: TranscriptionEngine) async throws {
+    private func transcribe(
+        _ dir: URL, using engine: TranscriptionEngine, pistas: PistasDeVoz? = nil
+    ) async throws {
         let meta = try SessionMeta.read(from: dir)
 
         var merged: [Transcript.Segment] = []
@@ -220,6 +226,12 @@ actor TranscriptionCoordinator {
             guard FileManager.default.fileExists(atPath: audio.path) else {
                 log(dir, "skipping missing track \(track.file)")
                 continue
+            }
+            // Donde la pasada anterior oyo voz en ESTA pista. El engine puede
+            // saltarse el resto en vez de adivinarlo por el nivel de audio.
+            if let pistas {
+                let offset = TimeInterval(track.offsetMs) / 1000
+                await engine.usarPistasDeVoz(pistas.tramos(de: track.speaker, restando: offset))
             }
             log(dir, "transcribing \(track.file) (\(engine.name))")
             // One bad track (empty, truncated) shouldn't cost us the other's
@@ -324,6 +336,52 @@ actor TranscriptionCoordinator {
 
     private func publish(_ status: Status) {
         statusHandler?(status)
+    }
+}
+
+/// Donde la pasada anterior oyo voz, leido de transcript.json.
+///
+/// Es el detector de voz mas barato disponible: la primera pasada ya corrio y
+/// su motor devuelve vacio ante el silencio, asi que sus segmentos marcan
+/// exactamente donde hay algo que transcribir. Mejor que medir el nivel de
+/// audio, porque distingue voz de ruido y no solo fuerte de flojo.
+private struct PistasDeVoz {
+    /// Segmentos de la linea de tiempo comun, con su hablante.
+    private let porHablante: [String: [ClosedRange<TimeInterval>]]
+
+    /// Margen a cada lado de un segmento. La primera pasada recorta los bordes
+    /// y una ventana del refinador es mucho mas larga que un segmento suyo; sin
+    /// holgura se perderian arranques y colas de frase.
+    private static let holgura: TimeInterval = 2
+
+    static func leer(de dir: URL) -> PistasDeVoz? {
+        let url = dir.appendingPathComponent("transcript.json")
+        guard
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let segs = json["segments"] as? [[String: Any]], !segs.isEmpty
+        else { return nil }
+
+        var mapa: [String: [ClosedRange<TimeInterval>]] = [:]
+        for s in segs {
+            guard
+                let quien = s["speaker"] as? String,
+                let ini = s["start_ms"] as? Int,
+                let fin = s["end_ms"] as? Int
+            else { continue }
+            let desde = TimeInterval(ini) / 1000 - holgura
+            let hasta = TimeInterval(fin) / 1000 + holgura
+            mapa[quien, default: []].append(desde...max(desde, hasta))
+        }
+        return mapa.isEmpty ? nil : PistasDeVoz(porHablante: mapa)
+    }
+
+    /// Tramos de un hablante llevados al reloj propio de su pista.
+    func tramos(de hablante: String, restando offset: TimeInterval) -> [ClosedRange<TimeInterval>] {
+        (porHablante[hablante] ?? []).map {
+            let a = $0.lowerBound - offset, b = $0.upperBound - offset
+            return a...max(a, b)
+        }
     }
 }
 

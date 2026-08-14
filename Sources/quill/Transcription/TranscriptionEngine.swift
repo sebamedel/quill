@@ -19,4 +19,17 @@ protocol TranscriptionEngine: Sendable {
     func prepare() async throws
     func transcribe(_ audio: URL) async throws -> [TranscriptSegment]
     func release() async
+
+    /// Where the previous pass found speech in this track, in track-local
+    /// seconds. A refining engine can use it to skip the rest instead of
+    /// guessing from the audio level.
+    ///
+    /// It exists because the two passes complement each other: the fast engine
+    /// returns nothing for silence, so its segments are a speech detector that
+    /// has already been paid for. Engines that don't need the hint ignore it.
+    func usarPistasDeVoz(_ tramos: [ClosedRange<TimeInterval>]) async
+}
+
+extension TranscriptionEngine {
+    func usarPistasDeVoz(_ tramos: [ClosedRange<TimeInterval>]) async {}
 }

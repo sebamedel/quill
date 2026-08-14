@@ -15,6 +15,10 @@ actor TranscriptionCoordinator {
     }
 
     private var queue: [URL] = []
+    /// Sessions that already have a transcript but never got the second pass.
+    /// Kept apart from `queue`: they don't need transcribing again from
+    /// scratch, only refining, and they must never delay a fresh recording.
+    private var pendingRefine: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
     private var lastFailure: String?
@@ -62,10 +66,59 @@ actor TranscriptionCoordinator {
         drainIfIdle()
     }
 
+    /// Scan for sessions whose transcript came from the fast engine and never
+    /// got the second pass. A session recorded before `refine_with` was
+    /// configured — or one whose refinement failed — keeps the first-pass
+    /// transcript forever otherwise, which on Spanish audio means keeping the
+    /// language drift. Rescanning at launch makes that self-healing.
+    ///
+    /// Sessions whose audio is gone are skipped: there is nothing left to
+    /// re-run, and that is the expected state after the audio is pruned.
+    func refinePending(root: URL) {
+        guard let refinador = Config.refineWith() else { return }
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil
+        ) else { return }
+
+        let pending = entries
+            .filter { dir in
+                guard transcriptEngine(in: dir).map({ $0 != refinador }) == true else { return false }
+                return hasAudio(in: dir)
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        for dir in pending where !pendingRefine.contains(dir) && !queue.contains(dir) {
+            pendingRefine.append(dir)
+        }
+        if !pending.isEmpty {
+            FileHandle.standardError.write(Data(
+                "refining \(pending.count) session(s) that never got the second pass\n".utf8
+            ))
+        }
+        drainIfIdle()
+    }
+
+    /// Which engine produced the transcript currently on disk, from the
+    /// `engine` field of transcript.json. nil when there is no transcript yet.
+    private func transcriptEngine(in dir: URL) -> String? {
+        let url = dir.appendingPathComponent("transcript.json")
+        guard
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json["engine"] as? String
+    }
+
+    private func hasAudio(in dir: URL) -> Bool {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+        else { return false }
+        return files.contains { $0.hasSuffix(".caf") }
+    }
+
     // MARK: -
 
     private func drainIfIdle() {
-        guard !draining, !queue.isEmpty else { return }
+        guard !draining, !(queue.isEmpty && pendingRefine.isEmpty) else { return }
         draining = true
         lastFailure = nil
         Task { await drain() }
@@ -96,8 +149,11 @@ actor TranscriptionCoordinator {
         // Second pass, once the fast transcripts and their minutas are already
         // out: the slow engine reruns the same audio and replaces the
         // transcript. It runs after the queue drains so a refinement never
-        // delays the next meeting's first pass.
-        await refine(refinables)
+        // delays the next meeting's first pass. Sessions found unrefined at
+        // launch ride along here, for the same reason and in the same way.
+        let atrasadas = pendingRefine
+        pendingRefine = []
+        await refine(refinables + atrasadas.filter { !refinables.contains($0) })
         publish(lastFailure.map { .failed(session: $0) } ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release

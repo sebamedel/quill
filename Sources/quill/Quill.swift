@@ -98,6 +98,7 @@ final class AppController {
                 }
             }
             await transcription.resumePending(root: root)
+            await transcription.refinePending(root: root)
         }
     }
 

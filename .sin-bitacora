@@ -1,0 +1,11 @@
+Este es un repositorio de codigo: aqui no se escribe la bitacora del proyecto.
+
+El hook SessionEnd de Claude escribe BITACORA.md en el directorio donde corrio
+la sesion, y una bitacora lleva nombres de clientes y detalles de reuniones. Si
+cae aqui, entra a git al primer `git add -A`. Ya paso una vez y hubo que
+reescribir el historial.
+
+El marcador viaja versionado a proposito, para que proteja tambien a quien
+clone el repositorio.
+
+Los datos de este sistema viven en ~/Recordings y ~/.config/quill.

@@ -21,6 +21,7 @@ actor TranscriptionCoordinator {
     private var pendingRefine: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private let diarizador = Diarizador()
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -220,7 +221,9 @@ actor TranscriptionCoordinator {
     ) async throws {
         let meta = try SessionMeta.read(from: dir)
 
-        var merged: [Transcript.Segment] = []
+        // Primero se transcribe todo y despues se decide si hay que separar
+        // voces, porque esa decision depende de lo que trajo la OTRA pista.
+        var porPista: [(track: SessionMeta.Track, audio: URL, segmentos: [TranscriptSegment])] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
@@ -243,13 +246,82 @@ actor TranscriptionCoordinator {
                 log(dir, "skipping \(track.file): \(error)")
                 continue
             }
+            porPista.append((track: track, audio: audio, segmentos: segments))
+        }
+
+        // Separar voces dentro de una pista solo se hace donde esta medido que
+        // sirve: el microfono de una reunion sin audio remoto, o sea presencial
+        // o por telefono con altavoz. Ahi todas las voces entran por el
+        // microfono y hoy la minuta escribe que no supo quien hablo.
+        //
+        // Fuera de ese caso NO se toca. En una reunion remota el microfono trae
+        // una sola persona y la pista ya es la respuesta; medido sobre una de 71
+        // minutos, el agrupador parte esa unica voz en cuatro personas. No hay
+        // umbral que arregle las dos cosas a la vez: probados de 0,6 a 0,8, el
+        // que separa a dos personas en una sala es el mismo que parte en cuatro
+        // a una persona sola. Mientras eso siga asi, separar de mas es peor que
+        // no separar, porque una etiqueta equivocada se lee como un hecho.
+        let textoRemoto = porPista
+            .filter { $0.track.speaker != "me" }
+            .reduce(0) { $0 + $1.segmentos.reduce(0) { $0 + $1.text.count } }
+        let huboAudioRemoto = textoRemoto > 200
+
+        var merged: [Transcript.Segment] = []
+        // Los turnos crudos, por pista. Se guardan aparte para que el visor
+        // pueda ponerle nombre a cada voz: ahi hay una persona que sabe cual es
+        // cual, aqui solo hay audio.
+        var vocesPorPista: [String: Voces] = [:]
+
+        for (track, audio, segments) in porPista {
+            var repartidos: [(voz: String?, segmento: TranscriptSegment)] =
+                segments.map { (voz: nil, segmento: $0) }
+
+            // Atribuir exige marcas por palabra. El motor refinador trabaja en
+            // ventanas de media hora partida en tramos de ~28 s y no las
+            // entrega: etiquetar uno de esos bloques con una sola voz pondria
+            // una afirmacion segura encima de un tramo donde hablaron dos, y una
+            // etiqueta equivocada se lee como un hecho. La version atribuida
+            // queda en transcript-parakeet.md, que la pasada de refinamiento
+            // conserva, junto al mapa de turnos en voces.json.
+            let hayMarcasDePalabra = segments.contains { !$0.palabras.isEmpty }
+
+            if Config.diarizeEnabled(), track.speaker == "me", !huboAudioRemoto,
+               !segments.isEmpty, hayMarcasDePalabra {
+                do {
+                    let voces = try await diarizador.diarizar(
+                        audio, umbral: Config.diarizeThreshold())
+                    let reales = voces.vocesReales()
+                    log(dir, "voces en \(track.file): \(reales.count) reales de "
+                        + "\(voces.reparto.count) candidatas — "
+                        + voces.reparto.prefix(4)
+                            .map { String(format: "%@ %.0fs", $0.voz, $0.segundos) }
+                            .joined(separator: ", "))
+                    if reales.count > 1 {
+                        repartidos = voces.repartir(segments)
+                        vocesPorPista[track.speaker] = voces
+                    }
+                } catch {
+                    // Una pista sin separar sigue siendo utilizable: queda
+                    // etiquetada por canal, como antes de que esto existiera.
+                    log(dir, "sin diarizar \(track.file): \(error)")
+                }
+            } else if Config.diarizeEnabled(), track.speaker == "me", !segments.isEmpty {
+                log(dir, huboAudioRemoto
+                    ? "sin separar voces: hubo audio remoto, el microfono trae "
+                        + "una sola persona"
+                    : "sin separar voces: \(engine.name) no entrega marcas por "
+                        + "palabra; la version atribuida queda en el transcript "
+                        + "de la primera pasada")
+            }
+
             let offset = TimeInterval(track.offsetMs) / 1000
-            merged += segments.map {
+            merged += repartidos.map {
                 Transcript.Segment(
                     speaker: track.speaker,
-                    start_ms: Int(($0.start + offset) * 1000),
-                    end_ms: Int(($0.end + offset) * 1000),
-                    text: $0.text
+                    voz: $0.voz,
+                    start_ms: Int(($0.segmento.start + offset) * 1000),
+                    end_ms: Int(($0.segmento.end + offset) * 1000),
+                    text: $0.segmento.text
                 )
             }
         }
@@ -262,6 +334,9 @@ actor TranscriptionCoordinator {
             segments: merged
         )
         try transcript.write(to: dir)
+        if !vocesPorPista.isEmpty {
+            try? MapaDeVoces(pistas: vocesPorPista.mapValues { $0.turnos }).write(to: dir)
+        }
         log(dir, "done — \(merged.count) segments")
     }
 
@@ -432,7 +507,12 @@ private struct SessionMeta {
 /// exists to be serialized.
 private struct Transcript: Codable {
     struct Segment: Codable {
+        /// La pista por la que entro: "me" el microfono, "them" el sistema.
         let speaker: String
+        /// Cual de las voces de esa pista, cuando hubo mas de una. La pista
+        /// dice por que canal llego el audio, no quien hablo: en una reunion
+        /// presencial todas las voces entran por el microfono.
+        let voz: String?
         let start_ms: Int
         let end_ms: Int
         let text: String
@@ -458,7 +538,10 @@ private struct Transcript: Codable {
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
         for seg in segments {
-            lines.append("**[\(Self.clock(seg.start_ms))] \(seg.speaker):** \(seg.text)")
+            // Con una sola voz por pista la etiqueta de siempre es la correcta
+            // y mas clara. Con varias, decir "me" de todas seria falso.
+            let quien = seg.voz ?? seg.speaker
+            lines.append("**[\(Self.clock(seg.start_ms))] \(quien):** \(seg.text)")
             lines.append("")
         }
         return lines.joined(separator: "\n")

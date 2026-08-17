@@ -3,7 +3,7 @@ import ArgumentParser
 import Foundation
 
 @main
-struct Quill: AsyncParsableCommand {
+struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
         abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",

@@ -73,6 +73,21 @@ enum Config {
             .appendingPathComponent(".config/quill/models/cohere", isDirectory: true)
     }
 
+    /// Separar las voces dentro de una pista. Encendido por omision: en una
+    /// reunion remota no cambia nada (una voz por pista) y en una presencial es
+    /// la diferencia entre una minuta con nombres y una que dice que no supo
+    /// quien hablo.
+    static func diarizeEnabled() -> Bool {
+        transcription()?["diarize"] as? Bool ?? true
+    }
+
+    /// Umbral de agrupamiento de voces. Ver `Diarizador.umbralPorOmision` para
+    /// de donde sale el numero; se deja configurable porque depende de la sala.
+    static func diarizeThreshold() -> Float {
+        if let n = transcription()?["diarize_threshold"] as? Double { return Float(n) }
+        return Diarizador.umbralPorOmision
+    }
+
     private static func transcription() -> [String: Any]? {
         load()?["transcription"] as? [String: Any]
     }

@@ -83,6 +83,9 @@ final class AppController {
     private let transcription = TranscriptionCoordinator()
     private var session: RecordingSession?
     private var ticker: Timer?
+    /// Se guarda para que viva lo que vive la aplicacion: al soltarse, el
+    /// deinit da de baja la combinacion y el atajo deja de responder.
+    private var atajo: AtajoGlobal?
 
     init(root: URL) {
         self.root = root
@@ -90,6 +93,19 @@ final class AppController {
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
+
+        if let combinacion = Config.atajo() {
+            atajo = AtajoGlobal(combinacion) { [weak self] in self?.toggle() }
+            if let atajo {
+                menuBar.mostrarAtajo(atajo)
+                FileHandle.standardError.write(Data("atajo \(combinacion) listo\n".utf8))
+            } else {
+                // No es motivo para no arrancar: la pluma del menu sigue ahi.
+                FileHandle.standardError.write(Data(
+                    ("atajo \(combinacion) no se pudo registrar; "
+                     + "probablemente otra aplicacion lo tiene tomado\n").utf8))
+            }
+        }
 
         Task { [transcription, root] in
             await transcription.setStatusHandler { status in

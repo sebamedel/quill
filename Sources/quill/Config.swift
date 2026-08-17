@@ -97,6 +97,16 @@ enum Config {
     /// as "me". Default off — the live voice unit ducks all other playback,
     /// and on headphones there's no echo to cancel anyway. Set true when
     /// recording meetings through the speakers.
+    /// Combinacion global para iniciar y parar la grabacion, o nil si se apago
+    /// dejandola vacia. Por omision hay una: el caso que resuelve (acordarse de
+    /// grabar cuando la reunion ya empezo y estas en otra ventana) es el comun,
+    /// y quien no la quiera la borra.
+    static func atajo() -> String? {
+        guard let v = load()?["hotkey"] as? String else { return "cmd+alt+r" }
+        let limpio = v.trimmingCharacters(in: .whitespaces)
+        return limpio.isEmpty ? nil : limpio
+    }
+
     static func micVoiceProcessing() -> Bool {
         load()?["mic_voice_processing"] as? Bool ?? false
     }

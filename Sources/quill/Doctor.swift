@@ -21,6 +21,7 @@ enum DoctorReport {
             checkSystemAudio(),
             checkRecordingsRoot(recordingsRoot),
             checkTranscription(),
+            checkAtajo(),
         ]
     }
 
@@ -74,6 +75,27 @@ enum DoctorReport {
             )
         }
         return Check(name: "recordings folder", status: .ok, remediation: nil)
+    }
+
+    /// El atajo global: si esta escrito con una tecla que no existe o sin
+    /// modificador, no se registra y uno se entera cuando lo necesita.
+    static func checkAtajo() -> Check {
+        guard let combinacion = Config.atajo() else {
+            return Check(name: "atajo de teclado", status: .warn("apagado en la configuracion"),
+                         remediation: nil)
+        }
+        // Aviso y no fallo: el arranque del daemon aborta ante un fallo, y un
+        // atajo mal escrito no puede dejarte sin poder grabar. La pluma del menu
+        // sigue estando.
+        guard AtajoGlobal.interpretar(combinacion) != nil else {
+            return Check(
+                name: "atajo de teclado",
+                status: .warn("no se entiende \"\(combinacion)\", queda apagado"),
+                remediation: "usa modificador mas letra, digito o space (p.ej. cmd+alt+r); "
+                    + "sin modificador no se acepta"
+            )
+        }
+        return Check(name: "atajo de teclado", status: .ok, remediation: nil)
     }
 
     /// Never discover a missing model after an important meeting: report

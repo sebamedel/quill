@@ -72,6 +72,14 @@ final class MenuBarController {
     /// menu bar shows only the feather (red while recording); the elapsed
     /// counter lives in the menu's state label. Call once a second while
     /// recording.
+    /// Muestra la combinacion junto a "start recording". Un atajo que no se ve
+    /// en ninguna parte es un atajo que se olvida.
+    func mostrarAtajo(_ atajo: AtajoGlobal) {
+        guard let (tecla, mascara) = atajo.paraElMenu else { return }
+        toggleItem.keyEquivalent = tecla
+        toggleItem.keyEquivalentModifierMask = mascara
+    }
+
     func update(recording: Bool, elapsed: String?) {
         stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
         toggleItem.title = recording ? "Stop recording" : "Start recording"

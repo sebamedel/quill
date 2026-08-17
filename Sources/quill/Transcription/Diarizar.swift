@@ -35,6 +35,12 @@ struct Diarizar: ParsableCommand {
     @Option(help: "Cuantas lineas de texto mostrar.")
     var lineas: Int = 40
 
+    /// Las reuniones grabadas antes de que esto existiera no tienen el mapa, y
+    /// volver a transcribirlas para conseguirlo seria pagar de nuevo lo caro
+    /// (la transcripcion) por lo barato (11 s de diarizacion).
+    @Flag(help: "Escribe voces.json junto al audio, sin tocar el transcript.")
+    var guardar = false
+
     /// Sincrono a proposito, aunque adentro sea todo asincrono.
     ///
     /// ArgumentParser exige que la raiz sea asincrona para admitir un
@@ -51,11 +57,12 @@ struct Diarizar: ParsableCommand {
         let umbralUsado = umbral ?? Diarizador.umbralPorOmision
         let texto = conTexto
         let cuantas = lineas
+        let guardarlo = guardar
 
         let espera = DispatchSemaphore(value: 0)
         let caja = CajaDeFallo()
         Task {
-            do { try await Self.ejecutar(ruta, umbralUsado, texto, cuantas) }
+            do { try await Self.ejecutar(ruta, umbralUsado, texto, cuantas, guardarlo) }
             catch { caja.guardar(error) }
             espera.signal()
         }
@@ -73,7 +80,8 @@ struct Diarizar: ParsableCommand {
     }
 
     private static func ejecutar(
-        _ ruta: String, _ umbralUsado: Float, _ conTexto: Bool, _ lineas: Int
+        _ ruta: String, _ umbralUsado: Float, _ conTexto: Bool, _ lineas: Int,
+        _ guardar: Bool = false
     ) async throws {
         let url = URL(fileURLWithPath: ruta)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -95,6 +103,21 @@ struct Diarizar: ParsableCommand {
             print(String(format: "  %@ %-8@ %6.1f s  %4.1f %%",
                          marca, voz, seg, seg / max(total, 0.001) * 100))
         }
+        if guardar {
+            let pista = url.lastPathComponent.hasPrefix("mic") ? "me" : "them"
+            let dir = url.deletingLastPathComponent()
+            // Se preserva lo que ya hubiera de la otra pista.
+            var pistas: [String: [Voces.Turno]] = [:]
+            let destino = dir.appendingPathComponent("voces.json")
+            if let datos = try? Data(contentsOf: destino),
+               let previo = try? JSONDecoder().decode(MapaDeVoces.self, from: datos) {
+                pistas = previo.pistas
+            }
+            pistas[pista] = voces.turnos
+            try MapaDeVoces(pistas: pistas).write(to: dir)
+            print("\nvoces.json escrito (\(voces.turnos.count) turnos en \(pista))")
+        }
+
         guard conTexto else { return }
 
         print("\ntranscribiendo con el motor rapido…")

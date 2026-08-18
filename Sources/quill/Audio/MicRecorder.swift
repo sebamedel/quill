@@ -46,7 +46,18 @@ final class MicRecorder: @unchecked Sendable {
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
         self.url = url
-        try attach(voiceProcessing: Config.micVoiceProcessing())
+        // La cancelacion de eco reconfigura el dispositivo, que es compartido:
+        // si hay una videollamada en curso, la deja sonando lejos y bajo del
+        // otro lado. Grabar con eco es un mal menor frente a que no te
+        // escuchen en la reunion que estas grabando.
+        var eco = Config.micVoiceProcessing()
+        if eco, OtrosCapturando.hayAlguno {
+            eco = false
+            FileHandle.standardError.write(Data(
+                ("otra aplicacion esta usando el microfono: se graba sin "
+                 + "cancelacion de eco para no degradarle el audio\n").utf8))
+        }
+        try attach(voiceProcessing: eco)
         isRecording = true
     }
 

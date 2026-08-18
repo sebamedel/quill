@@ -86,6 +86,8 @@ final class AppController {
     /// Se guarda para que viva lo que vive la aplicacion: al soltarse, el
     /// deinit da de baja la combinacion y el atajo deja de responder.
     private var atajo: AtajoGlobal?
+    /// Misma razon que el atajo: si se suelta, deja de mirar el archivo.
+    private var disparador: DisparadorArchivo?
 
     init(root: URL) {
         self.root = root
@@ -105,6 +107,10 @@ final class AppController {
                     ("atajo \(combinacion) no se pudo registrar; "
                      + "probablemente otra aplicacion lo tiene tomado\n").utf8))
             }
+        }
+
+        disparador = DisparadorArchivo(ruta: Config.rutaDisparador()) {
+            [weak self] in self?.toggle()
         }
 
         Task { [transcription, root] in

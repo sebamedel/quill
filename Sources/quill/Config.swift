@@ -107,6 +107,13 @@ enum Config {
         return limpio.isEmpty ? nil : limpio
     }
 
+    /// Archivo que, al aparecer, inicia o detiene la grabacion. Es la puerta
+    /// para que otro programa dispare una sesion sin tener que simular el
+    /// atajo, que en macOS exige permiso para controlar el computador entero.
+    static func rutaDisparador() -> URL {
+        path.deletingLastPathComponent().appendingPathComponent("grabar")
+    }
+
     static func micVoiceProcessing() -> Bool {
         load()?["mic_voice_processing"] as? Bool ?? false
     }

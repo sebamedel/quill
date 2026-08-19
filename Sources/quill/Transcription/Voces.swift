@@ -24,6 +24,16 @@ struct Voces: Sendable {
 
     let turnos: [Turno]
 
+    /// La huella de cada voz: el promedio de lo que el modelo oyo en sus
+    /// tramos, en un vector.
+    ///
+    /// Es lo unico de una grabacion que sirve en la siguiente. Los numeros de
+    /// voz no: "voz 4" es el cuarto grupo que se formo en ESTA pista y en la
+    /// proxima reunion sera otra persona. La huella, en cambio, es de la voz,
+    /// asi que comparada contra las que ya tienen nombre dice a quien se
+    /// parece. Sin esto hay que volver a decir quien es quien en cada reunion.
+    var huellas: [String: [Float]] = [:]
+
     /// Cuanto habla cada voz, en segundos. Es el numero que delata un corte
     /// malo: una conversacion de dos que sale 99/1 no encontro al segundo,
     /// aunque declare tres voces.
@@ -93,14 +103,46 @@ actor Diarizador {
         let resultado = try manager.performCompleteDiarization(muestras)
         manager.cleanup()
 
-        return Voces(turnos: resultado.segments.map {
-            Voces.Turno(
-                voz: "voz \($0.speakerId)",
-                inicio: Double($0.startTimeSeconds),
-                fin: Double($0.endTimeSeconds),
-                calidad: Double($0.qualityScore)
-            )
-        })
+        return Voces(
+            turnos: resultado.segments.map {
+                Voces.Turno(
+                    voz: "voz \($0.speakerId)",
+                    inicio: Double($0.startTimeSeconds),
+                    fin: Double($0.endTimeSeconds),
+                    calidad: Double($0.qualityScore)
+                )
+            },
+            huellas: Diarizador.huellas(de: resultado.segments)
+        )
+    }
+
+    /// Una huella por voz, promediando las de sus tramos.
+    ///
+    /// El promedio va pesado por lo que dura cada tramo: medio segundo de un
+    /// "ya" describe una voz mucho peor que veinte segundos de explicacion, y
+    /// contarlos igual acerca todas las huellas entre si. Al final se
+    /// normaliza, que es lo que deja comparar dos huellas por el angulo entre
+    /// ellas sin que importe el volumen.
+    static func huellas(de segmentos: [TimedSpeakerSegment]) -> [String: [Float]] {
+        var suma: [String: [Float]] = [:]
+        var largo = 0
+        for s in segmentos where !s.embedding.isEmpty {
+            let voz = "voz \(s.speakerId)"
+            let peso = max(s.endTimeSeconds - s.startTimeSeconds, 0.01)
+            if largo == 0 { largo = s.embedding.count }
+            guard s.embedding.count == largo else { continue }
+            var acumulado = suma[voz] ?? Array(repeating: Float(0), count: largo)
+            for i in 0..<largo { acumulado[i] += s.embedding[i] * peso }
+            suma[voz] = acumulado
+        }
+        return suma.mapValues { normalizada($0) }
+    }
+
+    /// El mismo vector con largo uno. Dos huellas normalizadas se comparan
+    /// multiplicandolas: cuanto mas cerca de uno, mas se parecen.
+    static func normalizada(_ v: [Float]) -> [Float] {
+        let norma = v.reduce(Float(0)) { $0 + $1 * $1 }.squareRoot()
+        return norma > 0 ? v.map { $0 / norma } : v
     }
 
 }
@@ -247,6 +289,11 @@ extension Voces {
 /// cuanto hablo cada una antes de decidir.
 struct MapaDeVoces: Codable {
     let pistas: [String: [Voces.Turno]]
+
+    /// La huella de cada voz, por pista. Es opcional porque los voces.json
+    /// escritos antes de que esto existiera no la traen, y una grabacion vieja
+    /// tiene que seguir abriendo igual.
+    var huellas: [String: [String: [Float]]]?
 
     func write(to dir: URL) throws {
         let encoder = JSONEncoder()

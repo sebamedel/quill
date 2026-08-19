@@ -70,6 +70,29 @@ struct Diarizar: ParsableCommand {
         if let fallo = caja.leerSincrono() { throw fallo }
     }
 
+    /// Pasa las huellas recien calculadas a los nombres de voz que ya existian.
+    ///
+    /// Se cruza por tiempo: cada voz nueva se queda con la vieja con la que
+    /// mas segundos comparte. Cuando dos nuevas caen sobre la misma vieja gana
+    /// la que mas comparte, porque una vieja no puede tener dos huellas.
+    static func trasladar(_ huellas: [String: [Float]], de nuevos: [Voces.Turno],
+                          a viejos: [Voces.Turno]) -> [String: [Float]] {
+        var comun: [String: [String: Double]] = [:]
+        for n in nuevos {
+            for v in viejos {
+                let solape = min(n.fin, v.fin) - max(n.inicio, v.inicio)
+                if solape > 0 { comun[n.voz, default: [:]][v.voz, default: 0] += solape }
+            }
+        }
+        var mejor: [String: (voz: String, segundos: Double)] = [:]
+        for (nueva, contra) in comun {
+            guard let (vieja, segundos) = contra.max(by: { $0.value < $1.value }) else { continue }
+            if let ya = mejor[vieja], ya.segundos >= segundos { continue }
+            mejor[vieja] = (voz: nueva, segundos: segundos)
+        }
+        return mejor.compactMapValues { huellas[$0.voz] }
+    }
+
     /// Guarda el error de la Task para relanzarlo desde run(). Una variable
     /// local capturada por la Task no compila bajo concurrencia estricta.
     private final class CajaDeFallo: @unchecked Sendable {
@@ -108,14 +131,32 @@ struct Diarizar: ParsableCommand {
             let dir = url.deletingLastPathComponent()
             // Se preserva lo que ya hubiera de la otra pista.
             var pistas: [String: [Voces.Turno]] = [:]
+            var huellas: [String: [String: [Float]]] = [:]
+            var previo: MapaDeVoces?
             let destino = dir.appendingPathComponent("voces.json")
-            if let datos = try? Data(contentsOf: destino),
-               let previo = try? JSONDecoder().decode(MapaDeVoces.self, from: datos) {
-                pistas = previo.pistas
+            if let datos = try? Data(contentsOf: destino) {
+                previo = try? JSONDecoder().decode(MapaDeVoces.self, from: datos)
+                pistas = previo?.pistas ?? [:]
+                huellas = previo?.huellas ?? [:]
             }
-            pistas[pista] = voces.turnos
-            try MapaDeVoces(pistas: pistas).write(to: dir)
-            print("\nvoces.json escrito (\(voces.turnos.count) turnos en \(pista))")
+
+            // Si esa pista ya estaba diarizada, sus numeros de voz se dejan
+            // como estan y solo se agrega la huella de cada una. No es un
+            // detalle: puede que ya le hayas puesto nombre a "voz 4", y esta
+            // corrida podria llamarle "voz 7" a la misma persona. Los turnos
+            // viejos mandan, y cada voz nueva hereda el nombre de la vieja con
+            // la que mas tiempo comparte.
+            if let anteriores = previo?.pistas[pista], !anteriores.isEmpty {
+                huellas[pista] = Self.trasladar(voces.huellas, de: voces.turnos,
+                                                a: anteriores)
+                print("\nhuellas escritas sobre los turnos que ya estaban "
+                    + "(\(huellas[pista]?.count ?? 0) voces)")
+            } else {
+                pistas[pista] = voces.turnos
+                huellas[pista] = voces.huellas
+                print("\nvoces.json escrito (\(voces.turnos.count) turnos en \(pista))")
+            }
+            try MapaDeVoces(pistas: pistas, huellas: huellas).write(to: dir)
         }
 
         guard conTexto else { return }

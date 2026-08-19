@@ -335,7 +335,8 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         if !vocesPorPista.isEmpty {
-            try? MapaDeVoces(pistas: vocesPorPista.mapValues { $0.turnos }).write(to: dir)
+            try? MapaDeVoces(pistas: vocesPorPista.mapValues { $0.turnos },
+                             huellas: vocesPorPista.mapValues { $0.huellas }).write(to: dir)
         }
         log(dir, "done — \(merged.count) segments")
     }

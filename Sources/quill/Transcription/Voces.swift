@@ -124,6 +124,27 @@ actor Diarizador {
     /// normaliza, que es lo que deja comparar dos huellas por el angulo entre
     /// ellas sin que importe el volumen.
     static func huellas(de segmentos: [TimedSpeakerSegment]) -> [String: [Float]] {
+        let limpios = segmentos.filter { s in
+            !segmentos.contains { otro in
+                otro.speakerId != s.speakerId
+                    && otro.startTimeSeconds < s.endTimeSeconds + aire
+                    && otro.endTimeSeconds > s.startTimeSeconds - aire
+            }
+        }
+        // Con los limpios cuando alcanzan, y con todos cuando no: una voz de
+        // veinte segundos que siempre habla encima de otra igual tiene que
+        // dejar huella, aunque peor.
+        var suma = promedios(de: limpios)
+        for (voz, v) in promedios(de: segmentos) where suma[voz] == nil { suma[voz] = v }
+        return suma
+    }
+
+    /// Un tramo con otra voz pegada a menos de esto no describe a nadie: lo que
+    /// suena ahi son dos personas, y el promedio queda a medio camino entre las
+    /// dos. Es la misma razon por la que el visor no lo usa como muestra.
+    private static let aire: Float = 0.4
+
+    private static func promedios(de segmentos: [TimedSpeakerSegment]) -> [String: [Float]] {
         var suma: [String: [Float]] = [:]
         var largo = 0
         for s in segmentos where !s.embedding.isEmpty {

@@ -249,18 +249,28 @@ actor TranscriptionCoordinator {
             porPista.append((track: track, audio: audio, segmentos: segments))
         }
 
-        // Separar voces dentro de una pista solo se hace donde esta medido que
-        // sirve: el microfono de una reunion sin audio remoto, o sea presencial
-        // o por telefono con altavoz. Ahi todas las voces entran por el
-        // microfono y hoy la minuta escribe que no supo quien hablo.
+        // Se separa la pista donde de verdad hay varias personas, que no es la
+        // misma segun como fue la reunion.
         //
-        // Fuera de ese caso NO se toca. En una reunion remota el microfono trae
-        // una sola persona y la pista ya es la respuesta; medido sobre una de 71
-        // minutos, el agrupador parte esa unica voz en cuatro personas. No hay
-        // umbral que arregle las dos cosas a la vez: probados de 0,6 a 0,8, el
-        // que separa a dos personas en una sala es el mismo que parte en cuatro
-        // a una persona sola. Mientras eso siga asi, separar de mas es peor que
-        // no separar, porque una etiqueta equivocada se lee como un hecho.
+        // Presencial: el microfono. Todas las voces entran por ahi y sin
+        // separar la minuta escribe que no supo quien hablo.
+        //
+        // Remota: la del sistema. Ahi llegan todos los demas mezclados en un
+        // solo canal etiquetado "them", y el microfono en cambio trae una sola
+        // persona, la que graba: la pista ya es la respuesta y separarla solo
+        // puede empeorarla. Medido sobre un microfono remoto de 71 minutos, el
+        // agrupador parte esa unica voz en cuatro personas.
+        //
+        // Y no hay umbral que sirva para las dos cosas a la vez: probados de
+        // 0,6 a 0,8, el que separa a dos personas en una sala es el mismo que
+        // parte en cuatro a una persona sola. Por eso la eleccion no es de
+        // umbral sino de pista.
+        //
+        // En la del sistema el agrupamiento sale mucho mejor que en una sala,
+        // porque cada uno habla a su propio microfono y la plataforma los
+        // entrega limpios y sin solaparse: medido sobre dos videollamadas
+        // reales, dos voces para dos personas al otro lado y cuatro para
+        // cuatro, sin ninguna candidata de ruido.
         let textoRemoto = porPista
             .filter { $0.track.speaker != "me" }
             .reduce(0) { $0 + $1.segmentos.reduce(0) { $0 + $1.text.count } }
@@ -285,8 +295,11 @@ actor TranscriptionCoordinator {
             // conserva, junto al mapa de turnos en voces.json.
             let hayMarcasDePalabra = segments.contains { !$0.palabras.isEmpty }
 
-            if Config.diarizeEnabled(), track.speaker == "me", !huboAudioRemoto,
-               !segments.isEmpty, hayMarcasDePalabra {
+            // La pista que toca separar: la remota si la reunion fue remota, el
+            // microfono si no hubo nadie al otro lado.
+            let separable = huboAudioRemoto ? track.speaker != "me" : track.speaker == "me"
+
+            if Config.diarizeEnabled(), separable, !segments.isEmpty, hayMarcasDePalabra {
                 do {
                     let voces = try await diarizador.diarizar(
                         audio, umbral: Config.diarizeThreshold())
@@ -305,13 +318,10 @@ actor TranscriptionCoordinator {
                     // etiquetada por canal, como antes de que esto existiera.
                     log(dir, "sin diarizar \(track.file): \(error)")
                 }
-            } else if Config.diarizeEnabled(), track.speaker == "me", !segments.isEmpty {
-                log(dir, huboAudioRemoto
-                    ? "sin separar voces: hubo audio remoto, el microfono trae "
-                        + "una sola persona"
-                    : "sin separar voces: \(engine.name) no entrega marcas por "
-                        + "palabra; la version atribuida queda en el transcript "
-                        + "de la primera pasada")
+            } else if Config.diarizeEnabled(), separable, !segments.isEmpty {
+                log(dir, "sin separar voces en \(track.file): \(engine.name) no "
+                    + "entrega marcas por palabra; la version atribuida queda "
+                    + "en el transcript de la primera pasada")
             }
 
             let offset = TimeInterval(track.offsetMs) / 1000

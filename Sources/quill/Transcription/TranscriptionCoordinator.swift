@@ -281,6 +281,11 @@ actor TranscriptionCoordinator {
         // pueda ponerle nombre a cada voz: ahi hay una persona que sabe cual es
         // cual, aqui solo hay audio.
         var vocesPorPista: [String: Voces] = [:]
+        // Las voces del microfono de una reunion remota. Se guardan aparte y se
+        // deciden al final: para saber cuales son personas en la sala hay que
+        // haber diarizado antes la pista del sistema, y el orden de las pistas
+        // no esta garantizado.
+        var vocesDelMicro: Voces?
 
         for (track, audio, segments) in porPista {
             var repartidos: [(voz: String?, segmento: TranscriptSegment)] =
@@ -324,6 +329,17 @@ actor TranscriptionCoordinator {
                     + "en el transcript de la primera pasada")
             }
 
+            // El microfono de una reunion remota trae una sola persona… salvo
+            // cuando dos se sientan frente al mismo computador. Se separa igual,
+            // pero solo para poder nombrarlas en el visor: el transcript de esta
+            // pista no se re-etiqueta, porque casi todo lo que el agrupador
+            // encuentra aqui es el parlante colandose por el microfono.
+            if Config.diarizeEnabled(), huboAudioRemoto, track.speaker == "me",
+               !segments.isEmpty, hayMarcasDePalabra {
+                vocesDelMicro = try? await diarizador.diarizar(
+                    audio, umbral: Config.diarizeThreshold())
+            }
+
             let offset = TimeInterval(track.offsetMs) / 1000
             merged += repartidos.map {
                 Transcript.Segment(
@@ -335,6 +351,35 @@ actor TranscriptionCoordinator {
                 )
             }
         }
+        // Quien estaba en la sala, si es que habia alguien mas.
+        //
+        // Una voz que entra por el microfono y ademas aparece en la pista del
+        // sistema no es una persona presente: es el parlante. Y eso no es
+        // parecerse, es la misma grabacion por dos caminos, asi que se
+        // reconoce con holgura: medido sobre una videollamada real, las tres
+        // voces que eran eco dieron 0,97, 0,93 y 0,91 contra su gemela remota,
+        // y la unica persona que estaba en la sala dio 0,18 contra la que mas
+        // se le parecia.
+        //
+        // Lo que queda son las voces de este lado. Si queda mas de una, dos
+        // personas compartieron el computador y hay algo que nombrar; si queda
+        // una sola es quien graba, que ya tiene su pista entera y no necesita
+        // que nadie lo identifique.
+        if let mias = vocesDelMicro {
+            let remotas = vocesPorPista.filter { $0.key != "me" }
+                .flatMap { $0.value.huellas.values }
+            let dellado = mias.huellas.filter { propia in
+                !remotas.contains { Diarizador.parecido(propia.value, $0) >= Diarizador.esLaMisma }
+            }
+            let solas = mias.soloLas(Set(dellado.keys))
+            let reales = solas.vocesReales()
+            log(dir, "microfono: \(reales.count) voces de este lado de "
+                + "\(mias.reparto.count) candidatas (el resto es el parlante)")
+            if reales.count > 1 {
+                vocesPorPista["me"] = solas
+            }
+        }
+
         merged.sort { $0.start_ms < $1.start_ms }
 
         let transcript = Transcript(
